@@ -51,7 +51,7 @@ subtest s32 => sub {
 };
 
 subtest s64 => sub {
-	my @vals= ( 0, 1, -1, 0x7F, 0x80, 0xFFFF, 0x7FFFFFFF, -0x7FFFFFFF, 0x80000000, 0x7FFFFFFFFFFFFFFF );
+	my @vals= ( 0, 1, -1, 0x7F, 0x80, 0xFFFF, 0x7FFFFFFF, -0x7FFFFFFF, (1<<31), (1<<63)-1 );
 	for (@vals) {
 		my $buf= Rsync::Protocol::Buffer->new;
 		$buf->pack_s64($_);
@@ -73,6 +73,7 @@ subtest 'v32' => sub {
 		my $buf= Rsync::Protocol::Buffer->new;
 		$buf->pack_v32($_);
 		is( $buf->unpack_v32, $_, "write/read $_" );
+		is( $buf->pos, $buf->len );
 	}
 	my $buf= Rsync::Protocol::Buffer->new;
 	$buf->pack_v32($_) for @vals;
@@ -83,20 +84,23 @@ subtest 'v32' => sub {
 
 subtest 'v64' => sub {
 	my @vals= (
-		0, (map { 1 << $_ } 0..62), (map { 2 << $_ } 0..61), (map { 3 << $_ } 0..61),
-		(map { 4 << $_ } 0..60), (map { 5 << $_ } 0..60), -1, -0x7F, -0x80, -0x80000000
+		0, (map { 1 << $_ } 0..46), (map { 2 << $_ } 0..45), (map { 3 << $_ } 0..45),
+		(map { 4 << $_ } 0..44), (map { 5 << $_ } 0..44)
 	);
-	for my $min_bytes (3..5) {
-		for (@vals) {
-			my $buf= Rsync::Protocol::Buffer->new;
+	my @vals_high= (
+		(map { 1 << $_ } 47..62), (map { 2 << $_ } 46..61), (map { 3 << $_ } 46..61),
+		(map { 4 << $_ } 45..60), (map { 5 << $_ } 45..60),
+		-1, -0x7F, -0x80, -0x80000000
+	);
+	for my $min_bytes (1..5) {
+		my $buf;
+		for (@vals, ($min_bytes >= 3? @vals_high : ())) {
+			$buf= Rsync::Protocol::Buffer->new;
 			$buf->pack_v64($_, $min_bytes);
 			is( $buf->unpack_v64($min_bytes), $_, "write/read $_" );
+			is( $buf->pos, $buf->len );
 		}
+		is( (try { $buf->unpack_v64($min_bytes); } catch { $_; }), $buf->EOF, 'EOF' );
 	}
-	my $buf= Rsync::Protocol::Buffer->new;
-	$buf->pack_v64($_, 3) for @vals;
-	my @ret= map { $buf->unpack_v64(3) } @vals;
-	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_v64(3); } catch { $_; }), $buf->EOF, 'EOF' );
 };
 
