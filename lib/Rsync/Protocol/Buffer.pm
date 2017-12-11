@@ -2,18 +2,10 @@ package Rsync::Protocol::Buffer;
 
 use strict;
 use warnings;
+use Carp;
 use overload '""' => sub { ${$_[0]} };
 
 =head1 CONSTANTS
-
-=head2 EOF
-
-This is a global reference, thrown as an exception during unpack operations when we reach the
-end of the buffer.
-
-=cut
-
-use constant EOF => \'EOF';
 
 =head1 METHODS
 
@@ -41,17 +33,33 @@ Gets or sets current unpacking position within the buffer.
 
 Returns the length of the buffer.
 
+=head2 append
+
+Append one or more strings to the buffer
+
+=head2 discard
+
+Remove all consumed bytes from the buffer (everything before L</pos>)
+
 =cut
 
 sub pos { pos(${$_[0]})= $_[1] if @_ > 1; pos ${$_[0]}; }
 *len= \&CORE::length;
+
+sub append {
+	${shift()} .= join '', @_;
+}
+
+sub discard {
+	substr(${$_[0]}, 0, pos ${$_[0]})= '';
+}
 
 =head2 pack_u8
 
 =head2 unpack_u8
 
 Pack or unpack unsigned 8-bit integer.  Supplied argument will be masked to C<0..0xFF>.
-Unpack dies with L</EOF> unless there is at least one byte at C<pos($buf)>.
+Returns undef unless there is at least one byte at C<pos($buf)>.
 
   $buf->pack_u8( 0x40 );  # number, not character
   my $x= $buf->unpack_u8;
@@ -60,8 +68,8 @@ Unpack dies with L</EOF> unless there is at least one byte at C<pos($buf)>.
 
 =head2 unpack_u16
 
-Pack or unpack unsigned 16-bit integer.  Integer will be masked to C<0..0xFFFF>.  Unpack dies
-with L</EOF> unless there are at least two bytes between C<pos($buf)> and C<length($buf)>.
+Pack or unpack unsigned 16-bit integer.  Integer will be masked to C<0..0xFFFF>.  Returns undef
+unless there are at least two bytes between C<pos($buf)> and C<length($buf)>.
 
   $buf->pack_u16( 0xFFFF );
   my $x= $buf->unpack_u16;
@@ -73,7 +81,7 @@ sub pack_u8 {
 }
 
 sub unpack_u8 {
-	${$_[0]} =~ /\G(.)/sgc or die EOF;
+	${$_[0]} =~ /\G(.)/sgc or return undef;
 	return ord($1);
 }
 
@@ -82,7 +90,7 @@ sub pack_u16 {
 }
 
 sub unpack_u16 {
-	${$_[0]} =~ /\G(..)/sgc or die EOF;
+	${$_[0]} =~ /\G(..)/sgc or return undef;
 	return unpack 'v', $1;
 }
 
@@ -91,8 +99,7 @@ sub unpack_u16 {
 =head2 unpack_s32
 
 Pack or unpack signed 32-bit integer.  Supplied argument will be truncated to 32-bits.
-Unpack dies with L</EOF> unless there are at least four bytes between C<pos($buf)> and
-C<length($buf)>.
+Returns undef unless there are at least four bytes between C<pos($buf)> and C<length($buf)>.
 
   $buf->pack_s32( 0x7FFFFFFF );
   my $x= $buf->unpack_s32;
@@ -102,8 +109,8 @@ C<length($buf)>.
 =head2 unpack_s64
 
 Pack or unpack signed 64-bit integer.  Supplied argument will be interpreted as signed even if
-it was an unsigned value.  Unpack dies with L</EOF> unless there are at least eight bytes
-between C<pos($buf)> and C<length($buf)>.
+it was an unsigned value.  Returns undef unless there are at least 4 or 12 bytes between
+C<pos($buf)> and C<length($buf)> (read the protocol... it's messy)
 
   $buf->pack_s64( 0x7FFFFFFF_FFFFFFFF );
   my $x= $buf->unpack_s64;
@@ -115,7 +122,7 @@ sub pack_s32 {
 }
 
 sub unpack_s32 {
-	${$_[0]} =~ /\G(....)/sgc or die EOF;
+	${$_[0]} =~ /\G(....)/sgc or return undef;
 	return unpack 'l<', $1;
 }
 
@@ -130,10 +137,10 @@ sub pack_s64 {
 }
 
 sub unpack_s64 {
-	${$_[0]} =~ /\G(....)/sgc or die EOF;
+	${$_[0]} =~ /\G(....)/sgc or return undef;
 	my $v= unpack 'l<', $1;
 	return $v unless $v == -1; # -1 means it is actually 64-bit
-	${$_[0]} =~ /\G(........)/sgc or die EOF;
+	${$_[0]} =~ /\G(........)/sgc or do { pos(${$_[0]}) -= 4; return undef; };
 	return unpack 'q<', $1;
 }
 
@@ -142,8 +149,8 @@ sub unpack_s64 {
 =head2 unpack_v32
 
 Pack or unpack a variable-length integer up to 32 bits.  Integer gets encoded as one to five
-bytes, and always succeeds.  Decoding will throw an exception if there are insufficient bytes
-or if the encoding indicates a value composed of more than five bytes.
+bytes, and always succeeds.  Decoding will return undef if there are insufficient bytes
+or die if the encoding indicates a value composed of more than five bytes.
 
   $buf->pack_v32( 0x7FFFFFFF );
   my $x= $buf->unpack_v32;
@@ -179,7 +186,7 @@ sub unpack_v32 {
 		| ([\xE0-\xEF]) (...)
 		| ([\xF0-\xF7]) (....)
 		| [\xF8-\xFB] .....
-		| [\xFC-\xFF] ...... ) /xsgc or die EOF;
+		| [\xFC-\xFF] ...... ) /xsgc or return undef;
 	return defined $2? ord($2)
 		: defined $3? ord($4) | ((ord($3)&0x7F) << 8)
 		: defined $5? unpack('S<', $6) | ((ord($5)&0x3F)<<16)
@@ -192,16 +199,13 @@ sub unpack_v32 {
 
 =head2 unpack_v64
 
-Pack or unpack a variable-length integer up to 32 bits.  Integer gets encoded as one to five
-bytes, and always succeeds.  Decoding will throw an exception if there are insufficient bytes
-or if the encoding indicates a value composed of more than five bytes.
+Pack or unpack a variable-length integer up to 64 bits.  Integer gets encoded as the specified
+minimum bytes plus up to 6 extra, and dies if the number would need more than 6 extra bytes.
+Decoding will return undef if there are insufficient bytes or die if the encoding indicates a
+value composed of more than 9 bytes.
 
-  $buf->pack_v32( 0x7FFFFFFF );
-  my $x= $buf->unpack_v32;
-
-Note that this uses the same encoding as L</pack_v64> with C<$min_bytes=1>, except that five
-bytes could indicate a value greater than 32-bit and this method silently discards any bits
-above 32.
+  $buf->pack_v64( 0x7FFFFFFF, $min_bytes );
+  my $x= $buf->unpack_v64( $min_bytes );
 
 =cut
 
@@ -242,7 +246,7 @@ sub unpack_v64 {
 		: $x < 0xFC? 5
 		: 6
 	);
-	pos($$self) + $n_bytes <= length $$self or die EOF;
+	pos($$self) + $n_bytes <= length $$self or return undef;
 	croak "Overflow in unpack_V64" if $n_bytes > 9;
 	my $buf= substr($$self, pos($$self)+1, $n_bytes-1);
 	pos($$self) += $n_bytes;
@@ -278,12 +282,24 @@ sub pack_vstring {
 
 sub unpack_vstring {
 	my $self= shift;
-	$$self =~ /\G( [\0-\x7F] | .. )/xgc or die EOF;
+	$$self =~ /\G( [\0-\x7F] | .. )/xgc or return undef;
 	my $len= unpack('n', $1."\0") & 0x7FFF;
 	my $p= pos($$self);
-	$p + $len <= length($$self) or die EOF;
+	$p + $len <= length($$self) or return undef;
 	pos($$self) += $len;
 	return substr($$self, $p, $len);
+}
+
+sub pack_lines {
+	my $self= shift;
+	$$self .= (substr($_, -1) eq "\n"? $_ : "$_\n") for @_;
+}
+*pack_line= *pack_lines;
+
+sub unpack_line {
+	my $self= shift;
+	$$self =~ /\G(.*)\n/gc or return undef;
+	return $1;
 }
 
 1;

@@ -19,7 +19,7 @@ subtest u8 => sub {
 	$buf->pack_u8($_) for @vals;
 	my @ret= map { $buf->unpack_u8 } @vals;
 	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_u8; } catch { $_; }), $buf->EOF, 'EOF' );
+	is( $buf->unpack_u8, undef, 'EOF' );
 };
 
 subtest u16 => sub {
@@ -33,7 +33,7 @@ subtest u16 => sub {
 	$buf->pack_u16($_) for @vals;
 	my @ret= map { $buf->unpack_u16 } @vals;
 	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_u16; } catch { $_; }), $buf->EOF, 'EOF' );
+	is( $buf->unpack_u16, undef, 'EOF' );
 };
 
 subtest s32 => sub {
@@ -47,7 +47,7 @@ subtest s32 => sub {
 	$buf->pack_s32($_) for @vals;
 	my @ret= map { $buf->unpack_s32 } @vals;
 	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_s32; } catch { $_; }), $buf->EOF, 'EOF' );
+	is( $buf->unpack_s32, undef, 'EOF' );
 };
 
 subtest s64 => sub {
@@ -61,7 +61,7 @@ subtest s64 => sub {
 	$buf->pack_s64($_) for @vals;
 	my @ret= map { $buf->unpack_s64 } @vals;
 	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_s64; } catch { $_; }), $buf->EOF, 'EOF' );
+	is( $buf->unpack_s64, undef, 'EOF' );
 };
 
 subtest 'v32' => sub {
@@ -79,7 +79,7 @@ subtest 'v32' => sub {
 	$buf->pack_v32($_) for @vals;
 	my @ret= map { $buf->unpack_v32 } @vals;
 	is_deeply( \@ret, \@vals, 'all in sequence' );
-	is( (try { $buf->unpack_v32; } catch { $_; }), $buf->EOF, 'EOF' );
+	is( $buf->unpack_v32, undef, 'EOF' );
 };
 
 subtest 'v64' => sub {
@@ -100,7 +100,7 @@ subtest 'v64' => sub {
 			is( $buf->unpack_v64($min_bytes), $_, "write/read $_" );
 			is( $buf->pos, $buf->len );
 		}
-		is( (try { $buf->unpack_v64($min_bytes); } catch { $_; }), $buf->EOF, 'EOF' );
+		is( $buf->unpack_v64($min_bytes), undef, 'EOF' );
 	}
 };
 
