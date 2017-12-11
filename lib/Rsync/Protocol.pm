@@ -1,5 +1,8 @@
 package Rsync::Protocol;
 use Moo;
+use Carp;
+use Try::Tiny;
+use Rsync::Protocol::Buffer;
 use Digest::MD5;
 use Digest::MD4;
 
@@ -17,24 +20,25 @@ sub state {
 	my $self= shift;
 	if (@_) {
 		my $state= shift;
-		my $cls= "Rsync::Protocol::State::$state";
+		my $cls= "Rsync::Protocol::_state_$state";
 		$cls->isa(__PACKAGE__) or croak "Invalid state $state"; 
 		bless $self, $cls;
 	}
-	return ($self =~ /Rsync::Protocol::State::(.*)/? $1 : undef;
+	return ($self =~ /Rsync::Protocol::_state_(.*)/? $1 : undef);
 }
 
-sub BEGIN {
+sub BUILD {
 	my $self= shift;
 	$self->state('Initial') unless $self->state;
 }
 
 sub parse {
+	return;
 }
 
-@Rsync::Protocol::State::Initial::ISA= 'Rsync::Protocol';
+@Rsync::Protocol::_state_Initial::ISA= 'Rsync::Protocol';
 
-sub Rsync::Protocol::State::Initial::start_socket_client {
+sub Rsync::Protocol::_state_Initial::start_socket_client {
 	my ($self, $commandline, $module, $username, $password)= @_;
 	$self->remote_cmd($commandline) if defined $commandline;
 	$self->daemon_module($module) if defined $module;
@@ -44,68 +48,70 @@ sub Rsync::Protocol::State::Initial::start_socket_client {
 	$self->state('ClientReadProtocol');
 }
 
-@Rsync::Protocol::State::ReadProtocol::ISA= 'Rsync::Protocol';
+@Rsync::Protocol::_state_ClientReadProtocol::ISA= 'Rsync::Protocol';
 
-sub Rsync::Protocol::State::ClientReadProtocol::parse {
+sub Rsync::Protocol::_state_ClientReadProtocol::parse {
 	my $self= shift;
-	my $daemon_response= $self->rbuf->unpack_line // return undef;;
+	my $daemon_response= $self->rbuf->unpack_line // return;
 	$self->rbuf->discard;
 	$daemon_response =~ /^\@RSYNCD: ([0-9]+)\.([-0-9]+)$/
-		or return [ ERROR => "Unexpected rsync server ident line: $daemon_response" ];
+		or return ERROR => "Unexpected rsync server ident line: $daemon_response";
 	my $remote_ver= $1;
 	my $remote_sub= $2;
 	my $proto= $self->version >= $remote_ver? ( $remote_sub? $remote_ver - 1 : $remote_ver )
 		: $self->version;
 	$proto >= 29
-		or return [ ERROR => "Can't talk protocol $remote_ver.$remote_sub or any prior" ];
+		or return ERROR => "Can't talk protocol $remote_ver.$remote_sub or any prior";
 	$self->version($proto);
 	$self->state('ClientLogin');
+	return VERSION => $self->version;
 }
 
-@Rsync::Protocol::State::ClientLogin::ISA= 'Rsync::Protocol';
+@Rsync::Protocol::_state_ClientLogin::ISA= 'Rsync::Protocol';
 
-sub Rsync::Protocol::State::ClientLogin::parse {
+sub Rsync::Protocol::_state_ClientLogin::parse {
 	my $self= shift;
-	my $line= $self->rbuf->unpack_line // return undef;
+	my $line= $self->rbuf->unpack_line // return;
 	$self->rbuf->discard;
 	if ($line =~ /^\@RSYNCD: AUTHREQD (.*)$/) {
 		$self->daemon_challenge($1);
 		if (defined $self->username && defined $self->password) {
 			$self->send_user_pass($self->username, $self->password);
 		} else {
-			return [ AUTHREQD => $1 ];
+			return AUTHREQD => $1;
 		}
 	}
 	elsif ($line =~ /^\@RSYNCD: OK$/) {
 		$self->state('Receiver');
-		return $self->parse;
+		return 'OK';
 	}
 	elsif ($line =~ /^\@RSYNCD: EXIT$/) {
-		return [ 'EXIT' ];
+		return 'EXIT';
 	}
 	elsif ($line =~ /\@ERROR: (.*)/) {
-		return [ ERROR => "Protocol error during login: $1" ];
+		return ERROR => "Protocol error during login: $1";
 	}
 	else {
-		return [ INFO => $line ];
+		return INFO => $line;
 	}
 }
 
-sub Rsync::Protocol::State::ClientLogin::send_user_pass {
+sub Rsync::Protocol::_state_ClientLogin::send_user_pass {
 	my ($self, $username, $password)= @_;
 	defined $self->daemon_challenge or croak "Can't perform login without challenge";
 	my $passhash= ($self->version >= 30? Digest::MD5->new : Digest::MD4->new)
 		->add($password)
-		->add($challenge)
+		->add($self->daemon_challenge)
 		->b64digest;
 	$passhash =~ s/=+$//;
 	$self->wbuf->pack_line("$username $passhash");
 	$self->parse;
 }
 
-@Rsync::Protocol::State::Receiver::ISA= 'Rsync::Protocol';
+@Rsync::Protocol::_state_Receiver::ISA= 'Rsync::Protocol';
 
-sub Rsync::Protocol::State::Receiver::parse {
+sub Rsync::Protocol::_state_Receiver::parse {
 	my $self= shift;
+	return;
 }
 
