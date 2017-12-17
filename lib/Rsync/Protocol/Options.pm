@@ -1,10 +1,8 @@
 package Rsync::Protocol::Options;
 use Moo;
-use Rsync::Protocol;
+use Try::Tiny;
 
-has protocol => ( is => 'rw', default => Rsync::Protocol::PROTOCOL_VERSION );
 has motd => ( is => 'rw', default => sub { 1 } );
-has rsync_path => ( is => 'rw', default => sub { '/usr/bin/rsync' } );
 has implied_dirs => ( is => 'rw', default => sub { 1 } );
 has human_readable => ( is => 'rw', default => sub { 1 } );
 has inc_recursive => ( is => 'rw', default => sub { 1 } );
@@ -352,17 +350,17 @@ sub _parse_size {
 }
 
 sub apply_argv {
-	my $self= shift;
+	my ($self, @argv)= @_;
 	try {
-		while (@_) {
-			my $arg= shift;
+		while (@argv) {
+			my $arg= shift @argv;
 			if (my ($name, $val)= ($arg =~ /^--([^=]+)=?(.*)/)) {
 				$name =~ s/-/_/g;
 				my $method= $self->can("opt_$name") or die "unknown option $arg\n";
 				if ($option_val_type{$name}) {
-					defined $val or @_ && $_[0] !~ /^-/
+					defined $val or @argv && $argv[0] !~ /^-/
 						or die "Missing required value for '$arg'\n";
-					$method->($self, defined $val? $val : shift);
+					$method->($self, defined $val? $val : shift @argv);
 				} else {
 					$method->($self);
 				}
@@ -370,17 +368,20 @@ sub apply_argv {
 			elsif (my ($opts, $v)= ($arg =~ /^-([^=]+)=?(.*)/)) {
 				my @opts= split //, $opts;
 				while (@opts) {
-					my $o= shift;
+					my $o= shift @opts;
 					my $method= $self->can("opt_$o") or die "unknown option -$o\n";
 					if ($option_val_type{$o}) {
 						# if an '=X' was given, it belongs to the final option in the bundle
-						!@opts or @_ && $_[0] !~ /^-/
+						!@opts or @argv && $argv[0] !~ /^-/
 							or die "Missing required value for '$arg'\n";
 						$method->($self, @opts? shift : $v);
 					} else {
 						$method->($self);
 					}
 				}
+			}
+			else {
+				die "Invalid option '$arg'";
 			}
 		}
 		undef; # return "no error"
