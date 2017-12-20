@@ -5,6 +5,8 @@ use warnings;
 use Carp;
 use overload '""' => sub { ${$_[0]} };
 
+use constant MPLEX_BASE => 7;
+
 =head1 CONSTANTS
 
 =head1 METHODS
@@ -41,6 +43,10 @@ Append one or more strings to the buffer
 
 Remove all consumed bytes from the buffer (everything before L</pos>)
 
+=head2 clear
+
+Reset buffer to an empty string.
+
 =cut
 
 sub pos { pos(${$_[0]})= $_[1] if @_ > 1; pos ${$_[0]}; }
@@ -52,6 +58,10 @@ sub append {
 
 sub discard {
 	substr(${$_[0]}, 0, pos ${$_[0]})= '';
+}
+
+sub clear {
+	${$_[0]}= '';
 }
 
 =head2 pack_u8
@@ -300,6 +310,26 @@ sub unpack_line {
 	my $self= shift;
 	$$self =~ /\G(.*)\n/gc or return undef;
 	return $1;
+}
+
+sub pack_msg {
+	my ($self, $code, $message)= @_;
+	$$self .= pack( 'V', ((MPLEX_BASE + $code) << 24) + length($message) ) . $message;
+}
+
+sub unpack_msg {
+	my $self= shift;
+	$$self =~ /\G(....)/gc or return undef;
+	my $v= unpack 'V', $1;
+	my $len= $v & 0xFFFFFF;
+	unless (length($$self) >= pos($$self) + $len) {
+		pos($$self) -= 4;
+		return undef;
+	}
+	my $message= substr($$self, pos($$self), $len);
+	pos($$self) += $len;
+	my $code= (($v >> 24) & 0xFF) - MPLEX_BASE;
+	return ($code, $message);
 }
 
 1;
