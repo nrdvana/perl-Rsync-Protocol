@@ -151,6 +151,8 @@ sub opt_acls {
 	$_[0]->acls(1);
 	$_[0]->perms(1);
 }
+has source => ( is => 'rw' );
+has dest   => ( is => 'rw' );
 
 our @options= qw(
 	8-bit-output|8!
@@ -315,8 +317,8 @@ sub _setup_option {
 		$class->can('has')->($attr, is => 'rw') unless $class->can($attr);
 		*{ $class . '::' . $method }=
 			$inc? sub { $_[0]->$attr( ($_[0]->$attr || 0) + 1 ) }
-			: $val? sub { shift->$attr(shift) }
-			: sub { shift->$attr(1) };
+			: $val? sub { $_[0]->$attr($_[1]) }
+			: sub { $_[0]->$attr(1) };
 	}
 	# point the aliases at it
 	*{ $class . '::opt_' . $_ }= $class->can($method) for @aliases;
@@ -325,8 +327,8 @@ sub _setup_option {
 		my $neg_method= 'opt_no_'.$attr;
 		unless ($class->can($neg_method)) {
 			*{ $class . '::' . $neg_method }=
-				$val? sub { shift->$attr(undef); }
-				: sub { shift->$attr(0); }
+				$val? sub { $_[0]->$attr($_[1]); }
+				: sub { $_[0]->$attr(0); }
 		}
 		*{ $class . '::opt_no_' . $_ }= *{ $class . '::' . $neg_method }
 			for @aliases;
@@ -349,47 +351,66 @@ sub _parse_size {
 	return $1 * $suffix_mult{lc($2 || $default_suffix)} + ($3 || 0);
 }
 
-sub apply_argv {
+sub apply_argv_return_error {
 	my ($self, @argv)= @_;
 	try {
-		while (@argv) {
-			my $arg= shift @argv;
-			if (my ($name, $val)= ($arg =~ /^--([^=]+)=?(.*)/)) {
-				$name =~ s/-/_/g;
-				my $method= $self->can("opt_$name") or die "unknown option $arg\n";
-				if ($option_val_type{$name}) {
-					defined $val or @argv && $argv[0] !~ /^-/
-						or die "Missing required value for '$arg'\n";
-					$method->($self, defined $val? $val : shift @argv);
+		$self->apply_argv(@argv);
+		undef;
+	} catch {
+		chomp;
+		$_;
+	};
+}
+
+sub apply_argv {
+	my ($self, @argv)= @_;
+	while (@argv) {
+		my $arg= shift @argv;
+		# Long option
+		if (my ($name, $val)= ($arg =~ /^--([^=]+)=?(.*)/)) {
+			$name =~ s/-/_/g;
+			my $method= $self->can("opt_$name") or die "unknown option $arg\n";
+			if ($option_val_type{$name}) {
+				defined $val or @argv && $argv[0] !~ /^-/
+					or die "Missing required value for '$arg'\n";
+				$method->($self, defined $val? $val : shift @argv);
+			} else {
+				$method->($self);
+			}
+		}
+		# Short option, possibly bundled
+		elsif (my ($opts)= ($arg =~ /^-([^-].*)$/)) {
+			my $i= 0;
+			while ($i < length $opts) {
+				my $o= substr($opts, $i++, 1);
+				my $method= $self->can("opt_$o") or die "unknown option -$o\n";
+				if ($option_val_type{$o}) {
+					# A short option that takes a value will consume the rest of the bundle
+					# Else it consumes the next argument
+					$method->($self, $i < length $opts? substr($opts, $i) : shift @argv);
+					$i= length $opts;
 				} else {
 					$method->($self);
 				}
 			}
-			elsif (my ($opts, $v)= ($arg =~ /^-([^=]+)=?(.*)/)) {
-				my @opts= split //, $opts;
-				while (@opts) {
-					my $o= shift @opts;
-					my $method= $self->can("opt_$o") or die "unknown option -$o\n";
-					if ($option_val_type{$o}) {
-						# if an '=X' was given, it belongs to the final option in the bundle
-						!@opts or @argv && $argv[0] !~ /^-/
-							or die "Missing required value for '$arg'\n";
-						$method->($self, @opts? shift : $v);
-					} else {
-						$method->($self);
-					}
-				}
-			}
-			else {
-				die "Invalid option '$arg'";
-			}
 		}
-		undef; # return "no error"
+		# End of options
+		elsif ($arg eq '--') {
+			return 1;
+		}
+		else {
+			!(grep /^-/, @argv)
+				or die "Encountered stray argument before end of options\n";
+			unshift @argv, $arg;
+			last;
+		}
 	}
-	catch {
-		chomp;
-		$_; # return error message
-	};
+	
+	@argv <= 2
+		or die "Too many non-options at end of argument list\n";
+	$self->source(shift @argv) if @argv;
+	$self->dest(shift @argv) if @argv;
+	return 1;
 }
 
 1;

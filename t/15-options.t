@@ -59,12 +59,22 @@ subtest parse_argv => sub {
 			one_file_system => 1,
 			hard_links => 1,
 			delete => 1,
+		},
+		[qw( --server --sender -de.Ls . foo/ )],
+		{
+			@defaults,
+			server => 1,
+			sender => 1,
+			dirs => 1,
+			rsh => '.Ls', # rsync abuses this field to inform about client capabilities
+			source => '.',
+			dest => 'foo/',
 		}
 	);
 	while (my ($argv, $attrs)= splice(@tests, 0, 2)) {
 		my $opt= Rsync::Protocol::Options->new;
-		$opt->apply_argv( @$argv );
-		is_deeply( { %$opt }, $attrs, join(' ', @$argv) )
+		is( $opt->apply_argv_return_error( @$argv ), undef, 'apply '.join(' ', @$argv) )
+		&& is_deeply( { %$opt }, $attrs, 'fields of '.join(' ', @$argv) )
 			or diag explain { %$opt };
 	}
 };
