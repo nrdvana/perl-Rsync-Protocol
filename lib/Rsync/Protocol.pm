@@ -5,10 +5,8 @@ use Carp;
 use Log::Any '$log';
 use Try::Tiny;
 use Rsync::Protocol::Buffer;
-use Digest::MD5;
-use Digest::MD4;
-
-use constant PROTOCOL_VERSION => 30;
+use Rsync::Protocol::Checksum;
+use Fcntl ':mode';
 
 # ABSTRACT: Implementation of the Rsync state machine, for writing clients or servers
 
@@ -21,7 +19,7 @@ use constant PROTOCOL_VERSION => 30;
       ... # handle events, call other methods to reply
     }
     write_data_to_peer($proto->wbuf);
-    $proto->wbuf->discard;
+    $proto->wbuf->clear;
   }
 
 =head1 DESCRIPTION
@@ -50,6 +48,55 @@ socket, append them to the read-buffer of the protocol object, call L</parse> re
 it doesn't return an event, then write any bytes that accumulated in the write-buffer back over
 to the peer.  This design allows you to choose between blocking read/write, or event driven
 designs.
+
+=cut
+
+use constant {
+	PROTOCOL_VERSION        => 30,
+	
+	# Flags for the first byte of each file list entry
+	
+	XMIT_TOP_DIR            => (1<<0),
+	XMIT_SAME_MODE          => (1<<1),
+	XMIT_SAME_RDEV_pre28    => (1<<2),  # protocols 20 - 27
+	XMIT_EXTENDED_FLAGS     => (1<<2),  # protocols 28 - now
+	XMIT_SAME_UID           => (1<<3),
+	XMIT_SAME_GID           => (1<<4),
+	XMIT_SAME_NAME          => (1<<5),
+	XMIT_LONG_NAME          => (1<<6),
+	XMIT_SAME_TIME          => (1<<7),
+	XMIT_SAME_RDEV_MAJOR    => (1<<8),  # protocols 28 - now (devices only)
+	XMIT_NO_CONTENT_DIR     => (1<<8),  # protocols 30 - now (dirs only)
+	XMIT_HLINKED            => (1<<9),  # protocols 28 - now
+	XMIT_SAME_DEV_pre30     => (1<<10), # protocols 28 - 29
+	XMIT_USER_NAME_FOLLOWS  => (1<<10), # protocols 30 - now
+	XMIT_RDEV_MINOR_8_pre30 => (1<<11), # protocols 28 - 29
+	XMIT_GROUP_NAME_FOLLOWS => (1<<11), # protocols 30 - now
+	XMIT_HLINK_FIRST        => (1<<12), # protocols 30 - now (HLINKED files only)
+	XMIT_IO_ERROR_ENDLIST   => (1<<12), # protocols 31*- now (w/XMIT_EXTENDED_FLAGS) (also protocol 30 w/'f' compat flag)
+	XMIT_MOD_NSEC           => (1<<13), # protocols 31 - now
+
+	# These flags are passed to the file list encoder, but not transferred
+
+	FLAG_TOP_DIR      => (1<<0),  # sender/receiver/generator
+	FLAG_OWNED_BY_US  => (1<<0),  # generator: set by make_file() for aux flists only
+	FLAG_FILE_SENT    => (1<<1),  # sender/receiver/generator
+	FLAG_DIR_CREATED  => (1<<1),  # generator
+	FLAG_CONTENT_DIR  => (1<<2),  # sender/receiver/generator
+	FLAG_MOUNT_DIR    => (1<<3),  # sender/generator (dirs only)
+	FLAG_SKIP_HLINK   => (1<<3),  # receiver/generator (w/FLAG_HLINKED)
+	FLAG_DUPLICATE    => (1<<4),  # sender
+	FLAG_MISSING_DIR  => (1<<4),  # generator
+	FLAG_HLINKED      => (1<<5),  # receiver/generator (checked on all types)
+	FLAG_HLINK_FIRST  => (1<<6),  # receiver/generator (w/FLAG_HLINKED)
+	FLAG_IMPLIED_DIR  => (1<<6),  # sender/receiver/generator (dirs only)
+	FLAG_HLINK_LAST   => (1<<7),  # receiver/generator
+	FLAG_HLINK_DONE   => (1<<8),  # receiver/generator (checked on all types)
+	FLAG_LENGTH64     => (1<<9),  # sender/receiver/generator
+	FLAG_SKIP_GROUP   => (1<<10), # receiver/generator
+	FLAG_TIME_FAILED  => (1<<11), # generator
+	FLAG_MOD_NSEC     => (1<<12), # sender/receiver/generator
+};
 
 =head1 ATTRIBUTES
 
@@ -288,7 +335,7 @@ STATE DaemonServerNegotiateModule => (
 		$salt =~ /^[^\n]+/ or die "Must provide a secure random salt value that doesn't contain newline";
 		$self->daemon_challenge($salt);
 		$self->wbuf->pack_lines('@RSYNCD: AUTHREQD '.$salt);
-		$self->state('DaemonServerCheckAuth');
+		$self->push_state('DaemonServerCheckAuth');
 	},
 	
 	DaemonServerCheckAuth => [
@@ -300,7 +347,7 @@ STATE DaemonServerNegotiateModule => (
 				or return $self->_fatal_error('Invalid username/passhash received from client');
 			$self->username($u);
 			$self->passhash($p);
-			$self->state('DaemonServerNegotiateModule');
+			$self->pop_state;
 			return AUTH => $u, $p;
 		},
 	],
@@ -333,7 +380,8 @@ STATE DaemonServerNegotiateModule => (
 STATE DaemonServerReadCommand => (
 	parse => sub {
 		my $self= shift;
-		# Protocol < 30 uses newline delimiter.  Later versions delimit with NUL
+		# Protocol < 30 uses newline terminator.  Later versions terminate with NUL
+		# They both end with a double terminator.
 		my $term= $self->protocol_version >= 30? "\0" : "\n";
 		return unless ${$self->rbuf} =~ /\G(.*?)$term$term/gc;
 		my @argv= split $term, $1;
@@ -345,73 +393,456 @@ STATE DaemonServerReadCommand => (
 	},
 );
 
-STATE DaemonServerSend => (
+STATE DaemonServerRun => (
+	send_filelist_entry => sub {
+		my ($self, $f)= @_;
+		return $self->_skip_error_filelist_entry($f, 'File name too long')
+			if length $f->{name} > $self->maxpathlen;
+		return $self->
+	},
+	_skip_error_filelist_entry => sub {
+		...
+	},
 );
 
-@Rsync::Protocol::_state_DaemonServerReadModule::ISA= 'Rsync::Protocol';
-
-@Rsync::Protocol::_state_ClientLogin::ISA= 'Rsync::Protocol';
-
-sub Rsync::Protocol::_state_ClientLogin::parse {
-	my $self= shift;
-	my $line= $self->rbuf->unpack_line // return;
-	$self->rbuf->discard;
-	if ($line =~ /^\@RSYNCD: AUTHREQD (.*)$/) {
-		$self->daemon_challenge($1);
-		if (defined $self->username && defined $self->password) {
-			$self->send_user_pass($self->username, $self->password);
-		} else {
-			return AUTHREQD => $1;
+STATE ClientLogin => (
+	parse => sub {
+		my $self= shift;
+		my $line= $self->rbuf->unpack_line // return;
+		$self->rbuf->discard;
+		if ($line =~ /^\@RSYNCD: AUTHREQD (.*)$/) {
+			$self->daemon_challenge($1);
+			if (defined $self->username && defined $self->password) {
+				$self->send_user_pass($self->username, $self->password);
+			} else {
+				return AUTHREQD => $1;
+			}
 		}
+		elsif ($line =~ /^\@RSYNCD: OK$/) {
+			return 'OK';
+		}
+		elsif ($line =~ /^\@RSYNCD: EXIT$/) {
+			return 'EXIT';
+		}
+		elsif ($line =~ /\@ERROR: (.*)/) {
+			return ERROR => "Protocol error during login: $1";
+		}
+		else {
+			return INFO => $line;
+		}
+	},
+	send_user_pass => sub {
+		my ($self, $username, $password)= @_;
+		defined $self->daemon_challenge or croak "Can't perform login without challenge";
+		my $digest= Rsync::Protocol::Checksum->select_class(undef, $self->protocol_version);
+		my $passhash= $digest->new->add($password)->add($self->daemon_challenge)->b64digest;
+		$passhash =~ s/=+$//;
+		$self->wbuf->pack_line("$username $passhash");
 	}
-	elsif ($line =~ /^\@RSYNCD: OK$/) {
-		return 'OK';
+
+	start_remote_sender => sub {
+		my ($self, $command)= @_;
+		$command //= $self->remote_cmd;
+		my @args= ref $command? @$command : split / +/, $command;
+		# In version 30, write arguments separated by NUL terminated by double NUL
+		if ($self->version >= 30) {
+			shift @args; # discard command name
+			$self->wbuf->append( map "$_\0", @args, '' );
+		}
+		# earlier versions use arguments separated by newline terminated by double newline
+		else {
+			shift @args;
+			$self->wbuf->append( map "$_\n", @args, '' );
+		}
+		
+		$self->multiplex_in(1) if $self->version <= 22;
+		$self->state('Receiver');
 	}
-	elsif ($line =~ /^\@RSYNCD: EXIT$/) {
-		return 'EXIT';
-	}
-	elsif ($line =~ /\@ERROR: (.*)/) {
-		return ERROR => "Protocol error during login: $1";
-	}
-	else {
-		return INFO => $line;
-	}
+);
+
+STATE Receiver => (
+	parse => sub {
+		my $self= shift;
+		return;
+	},
+);
+
+sub _get_name_for_uid {
+	my ($self, $uid)= @_;
+	# TODO: allow user to override lists
+	scalar getpwnam($uid);
 }
 
-sub Rsync::Protocol::_state_ClientLogin::send_user_pass {
-	my ($self, $username, $password)= @_;
-	defined $self->daemon_challenge or croak "Can't perform login without challenge";
-	my $passhash= ($self->version >= 30? Digest::MD5->new : Digest::MD4->new)
-		->add($password)
-		->add($self->daemon_challenge)
-		->b64digest;
-	$passhash =~ s/=+$//;
-	$self->wbuf->pack_line("$username $passhash");
+sub _get_name_for_gid {
+	my ($self, $gid)= @_;
+	# TODO: allow user to override lists
+	scalar getgrnam($gid);
 }
 
-sub Rsync::Protocol::_state_ClientLogin::start_remote_sender {
-	my ($self, $command)= @_;
-	$command //= $self->remote_cmd;
-	my @args= ref $command? @$command : split / +/, $command;
-	# In version 30, write arguments separated by NUL terminated by double NUL
-	if ($self->version >= 30) {
-		shift @args; # discard command name
-		$self->wbuf->append( map "$_\0", @args, '' );
+has _filelist_checksum_class => ( is => 'rw' );
+sub _build__filelist_checksum_class {
+	my $self= shift;
+	Rsync::Protocol::Checksum->select_class(
+		$self->opt->checksum_flist_choice,
+		$self->protocol_version
+	);
+}
+
+has _xfer_checksum_class => ( is => 'rw' );
+sub _build__xfer_checksum_class {
+	my $self= shift;
+	Rsync::Protocol::Checksum->select_class(
+		$self->opt->checksum_xfer_choice,
+		$self->protocol_version
+	);
+}
+
+# The rsync file-list has undergone quite a lot of changes across protocol versions.
+# It also differs significantly based on which options are in effect.
+# It is really slow to check all of these conditions for every single file list entry,
+# so this routine dynamically assembles perl code to perform only the needed processing
+# per call.  As an added benefit, it can close over local variables to speed up the
+# comparison to the previous encoded entry.
+
+sub _generate_flist_encoder {
+	my $self= shift;
+	my $ver=  $self->protocol_version;
+	my $code= 'sub {
+		my ($self, $f)= @_;
+		my $buf= $self->wbuf;';
+
+	# Initialize flags
+	my $flags;
+	if ($ver >= 30) {
+		$code .= '
+		$flags= !($f->{mode} & S_IFDIR)? 0
+			: ($f->{flags} && ($f->{flags} & FLAG_CONTENT_DIR))? $f->{flags} & FLAG_TOP_DIR;
+			: ($f->{flags} && ($f->{flags} & FLAG_IMPLIED_DIR))? XMIT_TOP_DIR | XMIT_NO_CONTENT_DIR
+			: XMIT_NO_CONTENT_DIR;';
+	} else {
+		$code .= '
+		$flags= !($f->{mode} & S_IFDIR)? 0
+			: $f->{flags} & FLAG_TOP_DIR;';
 	}
-	# earlier versions use arguments separated by newline terminated by double newline
-	else {
-		shift @args;
-		$self->wbuf->append( map "$_\n", @args, '' );
+
+	# Same mode as previous?
+	my $mode= -1;
+	$code .= '
+	$flags |= XMIT_SAME_MODE if $mode == $f->{mode};
+	$mode= $f->{mode};';
+
+	# Same device 'rdev' as before?
+	my ($rdev, $xmit_rdev);
+	if ($self->opt->devices) {
+		$rdev= -1;
+		$code .= '
+		if ($mode & (S_IFBLK|S_IFCHR)) {';
+		if ($ver < 28) {
+			# Protocol 27 and below have flag for recurring device numbers
+			$code .= '
+			$xmit_rdev= $rdev != $f->{rdev};
+			$flags |= XMIT_SAME_RDEV_pre28 unless $xmit_rdev;';
+		} else {
+			# protocol 28 and above have flag for re-using device.major
+			$code .= '
+			$xmit_rdev= 1;
+			$flags |= XMIT_SAME_RDEV_MAJOR if defined $rdev && major($f->{rdev}) == major($rdev);';
+			# Protocol 28, 29 have a flag for xmitting device.minor as a single byte
+			$code .= '
+			$flags |= XMIT_RDEV_MINOR_8_pre30 if minor($f->{rdev}) <= 0xFF;';
+				if $ver < 30;
+		}
+		$code .= '
+			$rdev= $f->{rdev};
+		}';
+	}
+	# Version 31 no longer transmits a rdev for specials (since not needed)
+	if ($self->opt->specials && $ver < 31) {
+		$code .= '
+		'.($self->opt->devices?' els':'').'if ($mode & (S_IFIFO|S_IFSOCK)) {';
+		# Special files don't need an rdev number, so just make
+		# the historical transmission of the value efficient.
+		if ($ver < 28) {
+			$code .= '
+			$xmit_rdev= 0;
+			$flags |= XMIT_SAME_RDEV_pre28;';
+		}
+		else {
+			$code .= '
+			$xmit_rdev= 1;
+			$rdev= MAKEDEV(major($rdev), 0);
+			$flags |= XMIT_SAME_RDEV_MAJOR '.($ver < 30? '| XMIT_RDEV_MINOR_8_pre30':'').';';
+		}
+		$code .= '
+		}';
+	}
+	if ($ver < 28) {
+		# 27 and below always overwrite rdev if current entry is not a device/special.
+		$code .= ($self->opt->devices || $self->opt->specials)? ' else {
+			$xmit_rdev= 0;
+			$rdev= MAKEDEV(0, 0);
+		}' : '
+		$xmit_rdev= 0;
+		$rdev= MAKEDEV(0, 0);';
+	}
+
+	# Same UID as previous?
+	my ($uid, $username, %uid_map);
+	if (!$self->opt->user) {
+		$code .= '
+		$flags |= XMIT_SAME_UID;';
+	} else {
+		$uid= -1;
+		$code .= '
+		if ($uid == ($f->{uid} || 0)) {
+			$flags |= XMIT_SAME_UID;
+		} else {
+			$uid= $f->{uid} || 0;';
+		if (!$self->opt->numeric_ids) {
+			$code .= '
+			if (!defined $uid_map{$uid}++) {
+				$username= $self->_get_username_for_uid($uid);';
+			$code .= '
+				$flags |= XMIT_USER_NAME_FOLLOWS if defined $username && length($username) < 255;'
+				if $self->opt->inc_recurse;
+			$code .= '
+			}';
+		}
+		$code .= '
+		}';
+	}
+
+	# Same GID as previous?
+	my ($gid, $groupname, %gid_map);
+	if (!$self->opt->group) {
+		$code .= '
+		$flags |= XMIT_SAME_GID;';
+	} else {
+		$gid= -1;
+		$code .= '
+		if ($gid == ($f->{gid} || 0)) {
+			$flags |= XMIT_SAME_GID;
+		} else {
+			$gid= $f->{gid} || 0;';
+		if (!$self->opt->numeric_ids) {
+			$code .= '
+			if (!defined $gid_map{$gid}++) {
+				$groupname= $self->_get_groupname_for_gid($gid);';
+			$code .= '
+				$flags |= XMIT_GROUP_NAME_FOLLOWS if defined $groupname && length($groupname) < 255;'
+				if $self->opt->inc_recurse;
+			$code .= '
+			}';
+		}
+		$code .= '
+		}';
 	}
 	
-	$self->multiplex_in(1) if $self->version <= 22;
-	$self->state('Receiver');
-}
+	# Same mtime as previous?
+	my $mtime;
+	$code .= '
+	$flags |= XMIT_SAME_TIME if defined $mtime and $f->{mtime} == $mtime;
+	$mtime= $f->{mtime}';
+	$code .= '
+	$flags |= XMIT_MOD_NSEC if defined $f->{mtime_nsec};'
+		if $ver >= 31;
 
-@Rsync::Protocol::_state_Receiver::ISA= 'Rsync::Protocol';
+	# Hard Links.
+	# Version 30 of the protocol writes first occurrence of an inode with the "HLINK_FIRST"
+	# flag, and then if it appears again it writes out the previous index within the filelist.
+	# Previous versions wrote the device number and inode into the filelist for every file.
+	my ($hlink_found, %hlink_map, $dev, $prev_dev, $fake_inode);
+	if ($self->opt->hard_links) {
+		$code .= '
+		$flags |= XMIT_HLINKED;
+		my $prev_dev= $dev;
+		($dev, $ino)= @{$f}{"dev","ino");';
+		if ($ver >= 30) {
+			$code .= '
+			$hlink_found= defined $dev && defined $ino? $hlink_map{$dev}{$ino} : undef;
+			if (!defined $hlink_found) {
+				$flags |= XMIT_HLINK_FIRST;
+				$hlink_map{$dev}{$ino}= $first_ndx + $ndx;
+			}';
+		} else {
+			# If the user of this library doesn't supply device/inode, then fake them.
+			# This is only needed for versions older than 30 where the dev/inode values
+			# get sent to the receiver.
+			$code .= '
+			if (defined $dev && defined $ino) {
+				$dev++ if $dev >= 120; # make room for our fake device
+			} else {
+				($dev, $ino)= (120, ++$fake_inode);
+			}'.($ver >= 28? '
+			$flags |= XMIT_SAME_DEV_pre30 if defined $prev_dev && $dev == $prev_dev;' : '').'
+			$dev= $f->{dev};';
+		}
+	}
 
-sub Rsync::Protocol::_state_Receiver::parse {
-	my $self= shift;
-	return;
+	# Compare previous and current filename
+	my ($name, $prev_name);
+	$code .= '
+	my $match_n= 0;
+	($name, $prev_name)= ($f->{name}, $name);
+	my $match_lim= min 255, length($name);
+	$match_n++
+		while $match_n < $match_lim
+		   && substr($name, $match_n, 1) eq substr($prev_name, $match_n, 1);
+	my $name_diff= substr($name, $match_n);
+	$flags |= XMIT_SAME_NAME if $match_n;
+	$flags |= XMIT_LONG_NAME if length $name_diff > 255;';
+
+	# Write Flags
+	# Make sure at least one bit is set in flags
+	if ($ver >= 28) {
+		$code .= '
+		# Use XMIT_TOP_DIR on non-dir, which has no meaning
+		$flags |= XMIT_TOP_DIR if !$flags && !($mode & S_IFDIR);
+		# Else use longer flags encoding
+		if (($flags & 0xFF00) || !$flags) {
+			$flags |= XMIT_EXTENDED_FLAGS;
+			$buf->write_shortint($flags);
+		} else {
+			$buf->write_byte($flags);
+		}';
+	} else {
+		$code .= '
+		$flags |= ($mode & S_IFDIR) ? XMIT_LONG_NAME : XMIT_TOP_DIR
+			unless $flags & 0xFF;
+		$buf->write_byte($flags);';
+	}
+	
+	# Write Name (portion different from previous)
+	$code .= '
+	$buf->write_byte($match_n) if $flags & XMIT_SAME_NAME;
+	if ($flags & XMIT_LONG_NAME) {
+		$buf->write_varint30(length $name_diff);
+	} else {
+		$buf->write_byte(length $name_diff);
+	}
+	$buf->append($name_diff);
+	';
+	
+	# If repeated hardlink in version 30+, write the file list index and skip the rest.
+	$code .= '
+	if (defined $hlink_found) {
+		$buf->write_varint($hlink_found);
+		return if $hlink_found < $first_ndx;
+	}' if $self->opt->hard_links && $ver >= 30;
+	
+	# File Size
+	$code .= '
+	$buf->write_varlong30($f->{size}, 3);';
+
+	# Mtime
+	$code .= $ver >= 30? '
+	$buf->write_varlong($mtime, 4) unless $flags & XMIT_SAME_TIME;' : '
+	$buf->write_int($mtime) unless $flags & XMIT_SAME_TIME;';
+	$code .= '
+	$buf->write_varint($f->{mtime_nsec}) if $flags & XMIT_MOD_NSEC;';
+	
+	# Mode
+	$code .= '
+	$buf->write_int(to_wire_mode($mode)) unless $flags & XMIT_SAME_MODE;';
+
+	# UID and maybe User Name
+	if ($self->opt->user) {
+		if ($ver < 30) {
+			$code .= '
+			$buf->write_int($uid) unless $flags & XMIT_SAME_UID;';
+		} else {
+			$code .= '
+			unless ($flags & XMIT_SAME_UID) {
+				$buf->write_varint($uid);
+				if ($flags & XMIT_USER_NAME_FOLLOWS) {
+					$buf->write_byte(length $username);
+					$buf->append($username);
+				}
+			}';
+		}
+	}
+
+	# GID and maybe Group Name
+	if ($self->opt->group) {
+		if ($ver < 30) {
+			$code .= '
+			$buf->write_int($gid) unless $flags & XMIT_SAME_GID;';
+		} else {
+			$code .= '
+			unless ($flags & XMIT_SAME_GID) {
+				$buf->write_varint($gid);
+				if ($flags & XMIT_GROUP_NAME_FOLLOWS) {
+					$buf->write_byte(length $groupname);
+					$buf->append($groupname);
+				}
+			}';
+		}
+	}
+
+	# Device node major/minor
+	$code .= '
+	if ($xmit_rdev) {';
+	if ($ver < 28) {
+		$code .= '
+		$buf->write_int($rdev);';
+	} elsif ($ver < 30) {
+		$code .= '
+		$buf->write_varint30(major($rdev))
+			unless $flags & XMIT_SAME_RDEV_MAJOR;
+		if ($flags & XMIT_RDEV_MINOR_8_pre30) {
+			$buf->write_byte(minor($rdev));
+		} else {
+			$buf->write_int(minor($rdev));
+		}';
+	} else {
+		$code .= '
+		$buf->write_varint30(major($rdev))
+			unless $flags & XMIT_SAME_RDEV_MAJOR;
+		$buf->write_varint(minor($rdev));';
+	}
+	$code .= '
+	}';
+
+	# Symlink content
+	$code .= '
+	if (defined $f->{symlink}) {
+		$buf->write_varint30(length $f->{symlink});
+		$buf->append($f->{symlink});
+	}';
+
+	# Device/Inode.  Only needed if hardlinks enabled and protocol < 30 where the receiver
+	# needs to know all device/inode numbers.  dev number is incremented to avoid sending 0.
+	if ($self->opt->hard_links && $ver < 26) {
+		$code .= '
+		$buf->write_int($dev+1);
+		$buf->write_int($ino);';
+	}
+	# Protocol 27..29 use 64-bit dev/inode
+	elsif ($self->opt->hard_links && $ver < 30) {
+		$code .= '
+		$buf->write_longint($dev+1) unless $flags & XMIT_SAME_DEV_pre30;
+		$buf->write_longint($ino);';
+	}
+
+	# File Checksum
+	my $empty_sum;
+	if ($self->opt->checksum) {
+		$code .= '
+		if (S_ISREG($mode)) {
+			$buf->append($self->_filelist_checksum_class->filelist_checksum($f));
+		}';
+		# Prior to 28, non-files had a bogus checksum
+		if ($ver < 28) {
+			$empty_sum= $self->_filelist_checksum_class->filelist_checksum({ data => '' });
+			$empty_sum= "\0" x length $empty_sum;
+			$code .= '
+			else { $buf->append($empty_sum); }';
+		}
+	}
+	
+	$code .= "\n}\n";
+	
+	# Now compile it!
+	return eval($code) || croak "Failed to compile file-list encoder: $!\n\n$code";
 }
 

@@ -154,6 +154,15 @@ sub opt_acls {
 has source => ( is => 'rw' );
 has dest   => ( is => 'rw' );
 
+sub checksum_xfer_choice {
+	my ($xfer, $flist)= split ',', (shift->checksum_choice || ''), 2;
+	$xfer;
+}
+sub checksum_flist_choice {
+	my ($xfer, $flist)= split ',', (shift->checksum_choice || ''), 2;
+	$flist || $xfer;
+}
+
 our @options= qw(
 	8-bit-output|8!
 	acls|A!
@@ -167,6 +176,7 @@ our @options= qw(
 	block-size|B
 	bwlimit!=s
 	checksum|c!
+	checksum-choice=s
 	checksum-seed=i
 	chmod=s
 	chown=s
@@ -410,7 +420,21 @@ sub apply_argv {
 		or die "Too many non-options at end of argument list\n";
 	$self->source(shift @argv) if @argv;
 	$self->dest(shift @argv) if @argv;
+	$self->make_coherent;
 	return 1;
+}
+
+sub make_coherent {
+	my $self= shift;
+	if (defined $self->checksum_choice) {
+		my ($xfer, $flist)=
+			grep { $_ =~ /^(auto|md4|md5|none)$/ or croak "No such checksum '$_'" }
+			split ',', $self->checksum_choice, 2;
+		# If xfer checksum is 'None', it implies --whole-file
+		$self->whole_file(1) if $xfer eq 'none';
+	}
+	
+	# TODO: many other checks needed here
 }
 
 1;
