@@ -60,7 +60,7 @@ sub filelist_checksum {
 	my ($class, $flist_entry)= @_;
 	if ($flist_entry->{data}) {
 		return $class->new->add($flist_entry->{data})->digest;
-	elsif ($flist_entry->{handle}) {
+	} elsif ($flist_entry->{handle}) {
 		return $class->new->addfile($flist_entry->{handle})->digest;
 	} elsif ($flist_entry->{path}) {
 		open my $fh, '<:raw', $flist_entry->{path} or croak "open($flist_entry->{path}): $!";

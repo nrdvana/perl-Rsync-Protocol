@@ -52,7 +52,7 @@ designs.
 =cut
 
 use constant {
-	PROTOCOL_VERSION        => 30,
+	PROTOCOL_VERSION        => 31,
 	
 	# Flags for the first byte of each file list entry
 	
@@ -197,7 +197,6 @@ sub STATE {
 	return $state_name => [ @_ ] if wantarray; # for nesting
 	{ no strict 'refs';
 		@{ 'Rsync::Protocol::_state_'.$state_name.'::ISA' }= ( $_inherit_from );
-		print "Rsync::Protocol::_state_${state_name}::ISA= $_inherit_from\n";
 	}
 	while (@_) {
 		my ($name, $thing)= splice(@_, 0, 2);
@@ -284,13 +283,16 @@ sub _fatal_error {
 
 STATE Initial => (
 	start_daemon_client => sub {
-		my ($self, $commandline, $module, $username, $password)= @_;
-		$self->opt->apply_argv($commandline) if defined $commandline;
+		my ($self, $module, $username, $password)= @_;
 		$self->daemon_module($module) if defined $module;
 		$self->username($username) if defined $username;
 		$self->password($password) if defined $password;
-		$self->wbuf->append('@RSYNCD: '.$self->protocol_version.".0\n");
-		$self->state('ClientReadProtocol');
+		$self->wbuf->pack_lines(
+			'@RSYNCD: '.$self->protocol_version.".0",
+			$module,
+		);
+		$self->state('DaemonClientSetup');
+		$self->push_state('DaemonReadVersion');
 	},
 
 	start_daemon_server => sub {
@@ -408,14 +410,14 @@ STATE DaemonServerRun => (
 		my ($self, $f)= @_;
 		return $self->_skip_error_filelist_entry($f, 'File name too long')
 			if length $f->{name} > $self->maxpathlen;
-		return $self->
+		...
 	},
 	_skip_error_filelist_entry => sub {
 		...
 	},
 );
 
-STATE ClientLogin => (
+STATE DaemonClientSetup => (
 	parse => sub {
 		my $self= shift;
 		my $line= $self->rbuf->unpack_line // return;
@@ -424,6 +426,7 @@ STATE ClientLogin => (
 			$self->daemon_challenge($1);
 			if (defined $self->username && defined $self->password) {
 				$self->send_user_pass($self->username, $self->password);
+				return;
 			} else {
 				return AUTHREQD => $1;
 			}
@@ -448,7 +451,7 @@ STATE ClientLogin => (
 		my $passhash= $digest->new->add($password)->add($self->daemon_challenge)->b64digest;
 		$passhash =~ s/=+$//;
 		$self->wbuf->pack_line("$username $passhash");
-	}
+	},
 
 	start_remote_sender => sub {
 		my ($self, $command)= @_;
@@ -467,7 +470,7 @@ STATE ClientLogin => (
 		
 		$self->multiplex_in(1) if $self->version <= 22;
 		$self->state('Receiver');
-	}
+	},
 );
 
 STATE Receiver => (
@@ -559,7 +562,7 @@ sub _generate_flist_encoder {
 			$flags |= XMIT_SAME_RDEV_MAJOR if defined $rdev && major($f->{rdev}) == major($rdev);';
 			# Protocol 28, 29 have a flag for xmitting device.minor as a single byte
 			$code .= '
-			$flags |= XMIT_RDEV_MINOR_8_pre30 if minor($f->{rdev}) <= 0xFF;';
+			$flags |= XMIT_RDEV_MINOR_8_pre30 if minor($f->{rdev}) <= 0xFF;'
 				if $ver < 30;
 		}
 		$code .= '
@@ -856,3 +859,4 @@ sub _generate_flist_encoder {
 	return eval($code) || croak "Failed to compile file-list encoder: $!\n\n$code";
 }
 
+1;

@@ -38,7 +38,7 @@ subtest parse_size => sub {
 	);
 	while (my ($spec, $value)= splice(@tests, 0, 2)) {
 		$opt->opt_min_size($spec);
-		is( $opt->min_size, $value, $spec );
+		is( $opt->min_size, $value, "size=$spec" );
 	}
 };
 

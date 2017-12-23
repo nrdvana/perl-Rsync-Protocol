@@ -1,6 +1,8 @@
 package Rsync::Protocol::Options;
+
 use Moo;
 use Try::Tiny;
+use Carp;
 
 # ABSTRACT: Options handling for Rsync
 
@@ -60,7 +62,7 @@ sub opt_delete_during { $_[0]->delete('during'); $_[0] }
 sub opt_delete_after  { $_[0]->delete('after');  $_[0] }
 sub opt_delete_delay  { $_[0]->delete('delay');  $_[0] }
 sub opt_quiet {
-	$_[0]->verbose( ($_[0]->verbose||0) - 1)
+	$_[0]->verbose( ($_[0]->verbose||0) - 1);
 	$_[0];
 }
 sub opt_archive {
@@ -384,7 +386,7 @@ sub _setup_option {
 	my ($class, $spec)= @_;
 	# Spec is compoased of names and optional negation, and the accessor is either
 	# a boolean (default) or incrementer or value-capture.
-	my ($names, $neg, $inc, $val)= ($spec =~ /^([^=!]+)(!)?([+])?(=[si])?$/)
+	my ($names, $neg, $inc, $val)= ($spec =~ /^([^=!]+)(!)?([+])?(=[siS])?$/)
 		or die "Invalid option spec '$spec'";
 	$names =~ s/-/_/g;
 	my ($attr, @aliases)= split /\|/, $names;

@@ -106,14 +106,16 @@ sub concat_trace_client_server {
 # sure that the protocol parser can handle partial writes.
 
 sub test_parse_with_interruptions {
-	my ($method_calls, $input, $expected_events)= @_;
+	my ($method_calls, $expected_output, $input, $expected_events)= @_;
 	# First, test by dumping the entire peer response at once
 	main::subtest( 'One Chunk' => sub { 
 		my $parser= Rsync::Protocol->new;
 		$parser->rbuf->append($input);
 		my @todo= @$method_calls;
 		my @expected= @$expected_events;
-		while ((my @event= $parser->parse) or @todo) {
+		my $prev_len= 0;
+		while ((my @event= $parser->parse) or @todo or $parser->wbuf->len > $prev_len) {
+			$prev_len= length $parser->wbuf;
 			if (@event) {
 				unless (main::is_deeply( \@event, $expected[0], 'event '.$expected[0][0] )) {
 					main::diag('Got '.main::explain(\@event).' instead of '.main::explain($expected[0]));
@@ -127,6 +129,7 @@ sub test_parse_with_interruptions {
 			}
 		}
 		main::is( scalar @expected, 0, 'received all events' );
+		main::is( ''.$parser->wbuf, $expected_output, 'generated expected output' );
 	});
 	
 	# Then, test by delivering the peer response one byte at a time
@@ -135,7 +138,9 @@ sub test_parse_with_interruptions {
 		my $pos= 0;
 		my @todo= @$method_calls;
 		my @expected= @$expected_events;
-		while ((my @event= $parser->parse) or @todo or $pos < length($input)) {
+		my $prev_len= 0;
+		while ((my @event= $parser->parse) or @todo or $pos < length($input) or $parser->wbuf->len > $prev_len) {
+			$prev_len= length $parser->wbuf;
 			if (@event) {
 				unless (main::is_deeply( \@event, $expected[0], 'event '.$expected[0][0] )) {
 					main::diag('Got '.main::explain(\@event).' instead of '.main::explain($expected[0]));
@@ -152,6 +157,7 @@ sub test_parse_with_interruptions {
 			}
 		}
 		main::is( scalar @expected, 0, 'received all events' );
+		main::is( ''.$parser->wbuf, $expected_output, 'generated expected output' );
 	});
 	
 	# Then test with some randomly divided chunks
@@ -160,7 +166,9 @@ sub test_parse_with_interruptions {
 		my $pos= 0;
 		my @todo= @$method_calls;
 		my @expected= @$expected_events;
-		while ((my @event= $parser->parse) or @todo or $pos < length($input)) {
+		my $prev_len= 0;
+		while ((my @event= $parser->parse) or @todo or $pos < length($input) or $parser->wbuf->len > $prev_len) {
+			$prev_len= length $parser->wbuf;
 			if (@event) {
 				unless (main::is_deeply( \@event, $expected[0], 'event '.$expected[0][0] )) {
 					main::diag('Got '.main::explain(\@event).' instead of '.main::explain($expected[0]));
@@ -180,6 +188,7 @@ sub test_parse_with_interruptions {
 			}
 		}
 		main::is( scalar @expected, 0, 'received all events' );
+		main::is( ''.$parser->wbuf, $expected_output, 'generated expected output' );
 	});
 }
 
