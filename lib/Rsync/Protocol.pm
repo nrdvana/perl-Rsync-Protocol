@@ -106,12 +106,12 @@ many others that are simply part of the protocol, and not documented here.
 =head2 rbuf
 
 The read-buffer.  This is always an instance of L<Rsync::Protocol::Buffer>.  You fill it with
-bytes for mthe peer, and the L</parse> method extracts bytes from it.
+bytes from the peer, and the L</parse> method extracts bytes from it.
 
 =head2 wbuf
 
 The write-buffer.  As you call L</parse> or other methods, messages to the peer will be encoded
-into this buffer.  You must then write the contents of the buffer over to the peer.
+into this buffer.  You must then write the contents of the buffer to the peer's socket.
 
 =head2 opt
 
@@ -140,15 +140,24 @@ sub _build_opt {
 
 # Active version of the protocol.  Starts at max value supported by this end, and negotiates
 # downward when we find out the peer's version.  Always an integer.
-has protocol_version => ( is => 'rw', default => sub { 30 } );
+has protocol_version => ( is => 'rw', default => sub { PROTOCOL_VERSION } );
 # Version reported by peer.  Maybe be fractional if talking to a pre-release version.
 has remote_version   => ( is => 'rw' );
 
+# "module" requested by client / to be requested from server
 has daemon_module    => ( is => 'rw' );
+
+# username, password  sent by client / received by server
 has username         => ( is => 'rw' );
 has password         => ( is => 'rw' );
+
+# passhash sent by client / received by server
 has passhash         => ( is => 'rw' );
+
+# random string sent by server to salt the password hash
 has daemon_challenge => ( is => 'rw' );
+
+# buffer of text received from daemon, which is motd or list of available modules, or both.
 has daemon_message   => ( is => 'rw' );
 
 has multiplex_in     => ( is => 'rw' );
@@ -180,6 +189,8 @@ sub pop_state {
 	$self->state(pop @{ $self->{_state_stack} });
 }
 
+# Each state is a subclass of this package, and defines new methods that are only valid in that
+# state.  This "STATE()" function helps set up those subclasses with minimal fuss.
 our $_inherit_from= __PACKAGE__;
 sub STATE {
 	my $state_name= shift;
@@ -243,8 +254,7 @@ sub _setup_protocol {
 =head2 State: Initial
 
 You can start communications as either client or server, and as either sender or receiver.
-(these are orthagonal, aside from that you must always be the receiver if you are a client
-connecting to an rsync daemon)
+(these roles are orthagonal)
 
 =head3 Methods
 

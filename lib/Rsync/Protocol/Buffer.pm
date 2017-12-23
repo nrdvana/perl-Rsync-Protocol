@@ -7,7 +7,16 @@ use overload '""' => sub { ${$_[0]} };
 
 use constant MPLEX_BASE => 7;
 
-=head1 CONSTANTS
+=head1 DESCRIPTION
+
+This class wraps a scalar ref which is used for packing and unpacking binary data.
+These objects have no knowledge of protocol version or active options.
+
+When reading bytes, the unpack_* functions advance the current position using Perl's regex
+position marker (see "perldoc -f pos").  The unpack functions return undef if they run out of
+bytes.  If the Protocol is unable to create a complete event from the buffer, it resets pos()
+to the initial position, but upon extracting a full event it calls L</discard> to remove
+the used bytes from the start of the buffer, resetting pos() to the new start of the string.
 
 =head1 METHODS
 

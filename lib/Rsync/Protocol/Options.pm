@@ -2,16 +2,66 @@ package Rsync::Protocol::Options;
 use Moo;
 use Try::Tiny;
 
+# ABSTRACT: Options handling for Rsync
+
+=head1 DESCRIPTION
+
+The rsync protocol is heavily based on a bunch of global variables which can be set from the
+command line.  It even passes the commandline arguments over the wire to initialize the remote
+end.  So, in order to implement the protocol it is also necessary to implement the options
+processing of the rsync command itself.
+
+If that wasn't bad enough, since the rsync options processing toggles these global variables as
+each option is seen, and some of them have side effects, it isn't even possible to get correct
+behavior from the various friendly option-processing modules on CPAN.  I don't claim to have
+re-implemented the options processing 100% identically, but it's at least close.
+
+=head1 ATTRIBUTES
+
+There are too many to list.  Just look at your manual page for rsync and assume there is
+probably an attribute for every option you see, except for the single-letter options and the
+negation options.  There's a handfull of exceptions which you can find in the source code.
+Sorry.
+
+=head1 METHODS
+
+For every long and short option (and their negations) there is a method of that name prefixed
+with "opt_", and calling this method has the same effect as specifying the option in apply_argv.
+
+For example,
+
+  $opts->opt_F->opt_F->opt_bwlimit('100k')->opt_no_inplace;
+
+is the same as
+
+  rsync -FF --bwlimit=100k --no-inplace
+
+=head2 option_val_type
+
+  $arg_type= $opts->option_val_type('F');
+  # returns undef, because ->opt_F does not take an argument.
+  $arg_type= $opts->option_val_type('timeout')
+  # returns 'i', because ->opt_timeout requires an integer.
+
+If you want to programmatically access the option functions, then you probably also need to
+know which ones require an argument.  This method lets you look up that detail.  Currently
+the specifications are 's' for string, 'i' for integer', and 'S' for Size.  You shouldn't
+depend on the codes much, because I might change them later.  (but non-argument options will
+always be undef)
+
+=cut
+
 has motd => ( is => 'rw', default => sub { 1 } );
 has implied_dirs => ( is => 'rw', default => sub { 1 } );
 has human_readable => ( is => 'rw', default => sub { 1 } );
 has inc_recursive => ( is => 'rw', default => sub { 1 } );
-sub opt_delete_before { shift->delete('before') }
-sub opt_delete_during { shift->delete('during') }
-sub opt_delete_after  { shift->delete('after') }
-sub opt_delete_delay  { shift->delete('delay') }
+sub opt_delete_before { $_[0]->delete('before'); $_[0] }
+sub opt_delete_during { $_[0]->delete('during'); $_[0] }
+sub opt_delete_after  { $_[0]->delete('after');  $_[0] }
+sub opt_delete_delay  { $_[0]->delete('delay');  $_[0] }
 sub opt_quiet {
 	$_[0]->verbose( ($_[0]->verbose||0) - 1)
+	$_[0];
 }
 sub opt_archive {
 	my $self= shift;
@@ -23,22 +73,27 @@ sub opt_archive {
 	$self->owner(1);
 	$self->devices(1);
 	$self->specials(1);
+	$self;
 }
-sub opt_old_dirs   { shift->dirs('old'); }
-sub opt_fake_super { shift->super('fake'); }
+sub opt_old_dirs   { $_[0]->dirs('old'); $_[0]; }
+sub opt_fake_super { $_[0]->super('fake'); $_[0]; }
 sub opt_D {
 	$_[0]->devices(1);
 	$_[0]->specials(1);
+	$_[0];
 }
 sub opt_no_D {
 	$_[0]->devices(0);
 	$_[0]->specials(0);
+	$_[0];
 }
 sub opt_append_verify {
-	shift->append('verify');
+	$_[0]->append('verify');
+	$_[0];
 }
 sub opt_remove_sent_files {
-	shift->remove_source_files('sent');
+	$_[0]->remove_source_files('sent');
+	$_[0];
 }
 has filters => ( is => 'rw' );
 sub add_filter {
@@ -46,6 +101,7 @@ sub add_filter {
 	my $f= $self->filters;
 	$self->filters( $f= [] ) unless $f;
 	push @$f, shift;
+	$self;
 }
 
 sub opt_F {
@@ -54,18 +110,20 @@ sub opt_F {
 	$_[0]->add_filter(': /.rsync-filter') if $called == 1;
 	# second time it is called, it adds this:
 	$_[0]->add_filter('- .rsync-filter') if $called == 2;
+	$_[0];
 }
-sub opt_filter { $_[0]->add_filter($_[1]); }
-sub opt_exclude { $_[0]->add_filter($_[1] =~ /^[-] /? $_[1] : "- $_[1]"); }
-sub opt_include { $_[0]->add_filter($_[1] =~ /^[+] /? $_[1] : "+ $_[1]"); }
-sub opt_exclude_from { $_[0]->add_filter('merge,- '.$_[1]); }
-sub opt_include_from { $_[0]->add_filter('merge,+ '.$_[1]); }
-sub opt_old_compress { shift->compress('old') }
-sub opt_new_compress { shift->compress('new') }
+sub opt_filter { $_[0]->add_filter($_[1]); $_[0]; }
+sub opt_exclude { $_[0]->add_filter($_[1] =~ /^[-] /? $_[1] : "- $_[1]"); $_[0]; }
+sub opt_include { $_[0]->add_filter($_[1] =~ /^[+] /? $_[1] : "+ $_[1]"); $_[0]; }
+sub opt_exclude_from { $_[0]->add_filter('merge,- '.$_[1]); $_[0]; }
+sub opt_include_from { $_[0]->add_filter('merge,+ '.$_[1]); $_[0]; }
+sub opt_old_compress { $_[0]->compress('old'); $_[0] }
+sub opt_new_compress { $_[0]->compress('new'); $_[0] }
 has partial => ( is => 'rw' );
 sub opt_partial {
 	$_[0]->partial($_[1]);
 	$_[0]->progress(1) if $_[1]; # enable progress if partial being enabled
+	$_[0];
 }
 has remote_options => ( is => 'rw' );
 sub opt_remote_option {
@@ -74,33 +132,38 @@ sub opt_remote_option {
 	my $ropts= $self->remote_options;
 	$self->remote_options( $ropts= [ undef ] );
 	push @$ropts, $opt;
+	$self;
 }
 has batch_name => ( is => 'rw' );
 has read_batch => ( is => 'rw' );
 has write_batch => ( is => 'rw' );
-sub opt_read_batch  { $_[0]->batch_name($_[1]); $_[0]->read_batch(1); }
-sub opt_write_batch { $_[0]->batch_name($_[1]); $_[0]->write_batch(1); }
-sub opt_only_write_batch { $_[0]->batch_name($_[1]); $_[0]->write_batch(-1); }
+sub opt_read_batch  { $_[0]->batch_name($_[1]); $_[0]->read_batch(1); $_[0]; }
+sub opt_write_batch { $_[0]->batch_name($_[1]); $_[0]->write_batch(1); $_[0]; }
+sub opt_only_write_batch { $_[0]->batch_name($_[1]); $_[0]->write_batch(-1); $_[0]; }
 has max_size => ( is => 'rw' );
 has min_size => ( is => 'rw' );
 sub opt_max_size {
 	my ($self, $size)= @_;
 	$self->max_size( _parse_size($size, 'b') );
+	$self;
 }
 sub opt_min_size {
 	my ($self, $size)= @_;
 	$self->min_size( _parse_size($size, 'b') );
+	$self;
 }
 has bwlimit => ( is => 'rw' );
 sub opt_bwlimit {
 	my ($self, $size)= @_;
 	$self->bwlimit( _parse_size($size, 'K') );
+	$self;
 }
 has append => ( is => 'rw' );
 sub opt_append {
 	my $self= shift;
 	# For servers, it increments.  For clients, it sets to 1.
 	$self->append( $self->server? (($self->append||0) + 1) : 1 );
+	$self;
 }
 
 has basis_dirs   => ( is => 'rw' );
@@ -109,6 +172,7 @@ sub _add_basis_dir {
 	my $bdirs= $self->basis_dirs;
 	$self->basis_dirs( $bdirs= [] ) unless $bdirs;
 	push @$bdirs, shift;
+	$self;
 }
 has link_dest    => ( is => 'rw' );
 has copy_dest    => ( is => 'rw' );
@@ -117,16 +181,19 @@ sub opt_link_dest {
 	my $self= shift;
 	$self->_add_basis_dir(shift);
 	$self->link_dest(1);
+	$self;
 }
 sub opt_copy_dest {
 	my $self= shift;
 	$self->_add_basis_dir(shift);
 	$self->copy_dest(1);
+	$self;
 }
 sub opt_compare_dest {
 	my $self= shift;
 	$self->_add_basis_dir(shift);
 	$self->compare_dest(1);
+	$self;
 }
 has usermap => ( is => 'rw' );
 has groupmap => ( is => 'rw' );
@@ -135,21 +202,26 @@ sub opt_chown {
 	my ($user, $group)= split /:/, $u_g, 2;
 	$self->usermap("*:$user");
 	$self->groupmap("*:$group") if defined $group;
+	$self;
 }
 sub opt_usermap {
 	my ($self, $map)= @_;
 	die "usermap already set\n" if defined $self->usermap;
 	$self->usermap($map);
+	$self;
 }
 sub opt_groupmap {
 	my ($self, $map)= @_;
 	die "groupmap already set\n" if defined $self->groupmap;
+	$self->groupmap($map);
+	$self;
 }
 has acls => ( is => 'rw' );
 sub opt_acls {
 	# --acls implies --perms
 	$_[0]->acls(1);
 	$_[0]->perms(1);
+	$_[0];
 }
 has source => ( is => 'rw' );
 has dest   => ( is => 'rw' );
@@ -174,7 +246,7 @@ our @options= qw(
 	backup-dir=s
 	blocking-io!
 	block-size|B
-	bwlimit!=s
+	bwlimit!=S
 	checksum|c!
 	checksum-choice=s
 	checksum-seed=i
@@ -243,8 +315,8 @@ our @options= qw(
 	log-file-format=s
 	log-file=s
 	max-delete=i
-	max-size=s
-	min-size=s
+	max-size=S
+	min-size=S
 	modify-window=i
 	motd!
 	msgs2stderr
@@ -326,9 +398,9 @@ sub _setup_option {
 	unless ($class->can($method)) {
 		$class->can('has')->($attr, is => 'rw') unless $class->can($attr);
 		*{ $class . '::' . $method }=
-			$inc? sub { $_[0]->$attr( ($_[0]->$attr || 0) + 1 ) }
-			: $val? sub { $_[0]->$attr($_[1]) }
-			: sub { $_[0]->$attr(1) };
+			$inc? sub { $_[0]->$attr( ($_[0]->$attr || 0) + 1 ); $_[0]; }
+			: $val? sub { $_[0]->$attr($_[1]); $_[0]; }
+			: sub { $_[0]->$attr(1); $_[0]; };
 	}
 	# point the aliases at it
 	*{ $class . '::opt_' . $_ }= $class->can($method) for @aliases;
@@ -337,8 +409,8 @@ sub _setup_option {
 		my $neg_method= 'opt_no_'.$attr;
 		unless ($class->can($neg_method)) {
 			*{ $class . '::' . $neg_method }=
-				$val? sub { $_[0]->$attr($_[1]); }
-				: sub { $_[0]->$attr(0); }
+				$val? sub { $_[0]->$attr($_[1]); $_[0]; }
+				: sub { $_[0]->$attr(0); $_[0]; }
 		}
 		*{ $class . '::opt_no_' . $_ }= *{ $class . '::' . $neg_method }
 			for @aliases;
@@ -360,6 +432,22 @@ sub _parse_size {
 		or die "invalid size: '$str'\n";
 	return $1 * $suffix_mult{lc($2 || $default_suffix)} + ($3 || 0);
 }
+
+=head1 METHODS
+
+=head2 apply_argv
+
+  $opts->apply_argv( @ARGV );
+
+Apply a list of command line arguments the same way they would be parsed by the real tool.
+Dies if any argument is invalid.
+
+=head2 apply_argv_return_error
+
+Same as above, but instead of dying it returns the error message.  Returns undef on success.
+
+=cut
+
 
 sub apply_argv_return_error {
 	my ($self, @argv)= @_;
@@ -423,6 +511,14 @@ sub apply_argv {
 	$self->make_coherent;
 	return 1;
 }
+
+=head2 make_coherent
+
+Perform the final logical cleanup of the options which the rsync tool performs after all
+options have been read.  This method is called automatically by L</apply_argv>, but you might
+want to call it after making direct adjustments to the attributes.
+
+=cut
 
 sub make_coherent {
 	my $self= shift;
